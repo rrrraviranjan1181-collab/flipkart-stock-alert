@@ -1,16 +1,12 @@
 
 import os
-import re
 import asyncio
-from datetime import datetime
 from playwright.async_api import async_playwright
 
-PRODUCT_URL = os.getenv(
+URL = os.getenv(
     "PRODUCT_URL",
     "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART"
 )
-
-SIZE = os.getenv("SIZE_LABEL", "M")
 
 async def main():
     async with async_playwright() as p:
@@ -19,43 +15,49 @@ async def main():
 
         try:
             response = await page.goto(
-                PRODUCT_URL,
-                wait_until="domcontentloaded",
-                timeout=45000
+                URL, wait_until="domcontentloaded", timeout=45000
             )
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(4000)
 
-            print("Time:", datetime.now().isoformat())
             print("HTTP:", response.status if response else "unknown")
-            print("Page:", await page.title())
+            print("TITLE:", await page.title())
 
-            # Locate the size selector, then try its exact M option.
-            selector = page.get_by_text(
-                re.compile(r"^\s*Select Size\s*$", re.I)
-            ).first
+            # Inspect exact-M elements and their surrounding markup.
+            items = await page.locator("body *").evaluate_all("""
+                els => els
+                  .filter(e => e.children.length === 0 &&
+                    e.textContent.trim() === 'M')
+                  .filter(e => {
+                    const r = e.getBoundingClientRect();
+                    const s = getComputedStyle(e);
+                    return r.width > 0 && r.height > 0 &&
+                      s.visibility !== 'hidden' && s.display !== 'none';
+                  })
+                  .slice(0, 20)
+                  .map(e => ({
+                    tag: e.tagName,
+                    text: e.textContent.trim(),
+                    role: e.getAttribute('role'),
+                    ariaLabel: e.getAttribute('aria-label'),
+                    ariaSelected: e.getAttribute('aria-selected'),
+                    ariaPressed: e.getAttribute('aria-pressed'),
+                    disabled: e.getAttribute('disabled'),
+                    className: String(e.className).slice(0, 180),
+                    parent: e.parentElement
+                      ? e.parentElement.outerHTML.slice(0, 700)
+                      : ''
+                  }))
+            """)
 
-            try:
-                await selector.wait_for(timeout=5000)
-                size_option = selector.locator(
-                    f"xpath=following::*[normalize-space()='{SIZE}'][1]"
-                )
-                await size_option.click(timeout=5000)
-                await page.wait_for_timeout(1500)
-                print(f"Clicked size option: {SIZE}")
-            except Exception as error:
-                print("SIZE SELECTION NOT CONFIRMED:", str(error))
+            print("EXACT M ELEMENTS:", len(items))
+            for i, item in enumerate(items, 1):
+                print(f"\\nCANDIDATE {i}: {item}")
 
-            body = await page.locator("body").inner_text()
-            print("\nPAGE TEXT AFTER SIZE TEST:\n")
-            print(body[:7000])
+            print("\\nPAGE TEXT:")
+            print((await page.locator("body").inner_text())[:2500])
 
-            # Never infer size-specific stock from generic page text.
-            print("\nRESULT: SIZE-SPECIFIC STATUS NOT YET VERIFIED.")
-            print("Inspect the page text above for the selected size,")
-            print("availability message, and purchase button.")
-
-        except Exception as error:
-            print("PAGE READ FAILED:", str(error))
+        except Exception as exc:
+            print("ERROR:", repr(exc))
         finally:
             await browser.close()
 
