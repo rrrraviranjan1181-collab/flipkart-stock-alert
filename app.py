@@ -7,7 +7,7 @@ from playwright.async_api import async_playwright
 
 PRODUCT_URL = os.getenv(
     "PRODUCT_URL",
-    "https://dl.flipkart.com/s/kVLy0huuuN"
+    "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART&lid=LSTTSHHNNHCKTYHWHGNCQBKSM&affid=inf_171ab171-5bdf-43ca-a197-6b0847941973&_refId=&_appId=CL"
 )
 SIZE = os.getenv("SIZE_LABEL", "M")
 
