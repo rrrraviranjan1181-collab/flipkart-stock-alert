@@ -1,5 +1,5 @@
 
-name: Flipkart Page Check
+name: Flipkart Stock Monitor
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  check-product:
+  check-stock:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -25,11 +25,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
 
-      - name: Read product page
-        env:
-          PRODUCT_URL: https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART&lid=LSTTSHHNNHCKTYHWHGNCQBKSM&affid=inf_171ab171-5bdf-43ca-a197-6b0847941973&_refId=&_appId=CL
-          SIZE_LABEL: M
+      - name: Check product
         run: python app.py
