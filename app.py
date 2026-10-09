@@ -7,8 +7,9 @@ from playwright.async_api import async_playwright
 
 PRODUCT_URL = os.getenv(
     "PRODUCT_URL",
-    "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART&lid=LSTTSHHNNHCKTYHWHGNCQBKSM&affid=inf_171ab171-5bdf-43ca-a197-6b0847941973&_refId=&_appId=CL"
+    "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART"
 )
+
 SIZE = os.getenv("SIZE_LABEL", "M")
 
 async def main():
@@ -28,26 +29,30 @@ async def main():
             print("HTTP:", response.status if response else "unknown")
             print("Page:", await page.title())
 
-            body = await page.locator("body").inner_text()
-            print("\nPage text preview:\n", body[:5000])
+            # Locate the size selector, then try its exact M option.
+            selector = page.get_by_text(
+                re.compile(r"^\s*Select Size\s*$", re.I)
+            ).first
 
-            if re.search(
-                r"captcha|verify you are human|access denied",
-                body,
-                re.I
-            ):
-                print("\nRESULT: BLOCKED - manual verification needed.")
-            elif re.search(
-                r"sold out|out of stock|currently unavailable",
-                body,
-                re.I
-            ):
-                print("\nRESULT: Possible unavailable state.")
-            else:
-                print(
-                    f"\nRESULT: UNKNOWN. "
-                    f"Size {SIZE} availability is not verified."
+            try:
+                await selector.wait_for(timeout=5000)
+                size_option = selector.locator(
+                    f"xpath=following::*[normalize-space()='{SIZE}'][1]"
                 )
+                await size_option.click(timeout=5000)
+                await page.wait_for_timeout(1500)
+                print(f"Clicked size option: {SIZE}")
+            except Exception as error:
+                print("SIZE SELECTION NOT CONFIRMED:", str(error))
+
+            body = await page.locator("body").inner_text()
+            print("\nPAGE TEXT AFTER SIZE TEST:\n")
+            print(body[:7000])
+
+            # Never infer size-specific stock from generic page text.
+            print("\nRESULT: SIZE-SPECIFIC STATUS NOT YET VERIFIED.")
+            print("Inspect the page text above for the selected size,")
+            print("availability message, and purchase button.")
 
         except Exception as error:
             print("PAGE READ FAILED:", str(error))
