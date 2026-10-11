@@ -1,30 +1,15 @@
 
+
 import re
 import sys
 import requests
-
-try:
-    from bs4 import BeautifulSoup
-except ImportError:
-    print("""
-========== FLIPKART MONITOR REPORT ==========
-RESULT: FAILED
-PROBLEM: Python package 'beautifulsoup4' is missing.
-RESOLUTION:
-1. Add beautifulsoup4 to requirements.txt.
-2. Re-run GitHub Actions.
-=============================================
-""")
-    sys.exit(1)
-
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 URL = (
     "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/"
     "p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART"
 )
-
-TARGET_COLOR = "BLACK"
-TARGET_SIZE = "M"
 
 HEADERS = {
     "User-Agent": (
@@ -35,193 +20,100 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9",
 }
 
-SIZES = {"XS", "S", "M", "L", "XL", "XXL"}
+
+def clean(text):
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
-def clean(value):
-    return re.sub(r"\s+", " ", value or "").strip()
-
-
-def short(value, limit=180):
-    value = clean(str(value))
-    return value[:limit] + ("..." if len(value) > limit else "")
-
-
-def report(lines):
-    print("\n========== FLIPKART MONITOR REPORT ==========")
-    for line in lines:
-        print(line)
-    print("=============================================")
-    print("Copy the report above and send it to ChatGPT.")
+def print_report(status, evidence, solution):
+    print("\n========== FLIPKART MONITOR ==========")
+    print("PRODUCT: Adidas Black T-Shirt")
+    print("TARGET: Black | Size M")
+    print(f"RESULT: {status}")
+    print(f"EVIDENCE: {evidence}")
+    print(f"NEXT STEP: {solution}")
+    print("======================================")
+    print("Copy this short report and send it to ChatGPT.")
 
 
 def main():
-    result = [
-        "PRODUCT: Adidas Black Round Neck T-Shirt",
-        f"TARGET VARIANT: {TARGET_COLOR}, size {TARGET_SIZE}",
-    ]
-
     try:
         response = requests.get(URL, headers=HEADERS, timeout=25)
+        response.raise_for_status()
     except requests.RequestException as exc:
-        report([
-            *result,
-            "RESULT: FAILED",
-            f"PROBLEM: Website request failed: {short(exc, 220)}",
-            "RESOLUTION: Check the internet connection, timeout, or "
-            "whether Flipkart is blocking automated requests.",
-        ])
-        return
-
-    result.append(f"HTTP STATUS: {response.status_code}")
-
-    if response.status_code != 200:
-        result.extend([
-            "RESULT: PAGE NOT LOADED SUCCESSFULLY",
-            "PROBLEM: Flipkart did not return HTTP 200.",
-            "RESOLUTION: Check the product URL and retry later. "
-            "A 403/429 may indicate blocking or rate limiting.",
-        ])
-        report(result)
-        return
+        print_report(
+            "CHECK FAILED",
+            f"Could not load Flipkart: {str(exc)[:180]}",
+            "Check the URL, network, or possible website blocking, then retry.",
+        )
+        sys.exit(1)
 
     soup = BeautifulSoup(response.text, "html.parser")
     page_text = clean(soup.get_text(" ", strip=True))
-    upper_text = page_text.upper()
+    lower_text = page_text.lower()
 
-    title = soup.title.get_text(" ", strip=True) if soup.title else "Not found"
-    result.append(f"PAGE TITLE: {short(title, 150)}")
-    result.append(
-        "BLACK COLOUR TEXT: "
-        + ("FOUND" if TARGET_COLOR in upper_text else "NOT FOUND")
+    # Find the actual M size link, not a generic occurrence of letter M.
+    m_links = [
+        a for a in soup.find_all("a")
+        if clean(a.get_text(" ", strip=True)).upper() == "M"
+        and "swatchAttr=size" in a.get("href", "")
+    ]
+
+    if not m_links:
+        print_report(
+            "UNKNOWN",
+            f"Page loaded (HTTP {response.status_code}), but the M size link "
+            "was not found.",
+            "Inspect the latest product HTML; Flipkart may have changed its layout.",
+        )
+        return
+
+    m_link = m_links[0]
+    m_html = str(m_link)
+
+    # Observed on this page: unavailable size options have a thin grey
+    # horizontal overlay across the size label.
+    strike_marker = any(
+        re.search(r"height\s*:\s*1px", element.get("style", ""), re.I)
+        and re.search(
+            r"background-color\s*:\s*(#d6d6d6ff|#d6d6d6)",
+            element.get("style", ""),
+            re.I,
+        )
+        for element in m_link.find_all(style=True)
     )
 
-    # Find exact M elements without printing the entire HTML page.
-    m_elements = []
-    for element in soup.find_all(["a", "button", "div", "span", "li"]):
-        if clean(element.get_text(" ", strip=True)).upper() == TARGET_SIZE:
-            m_elements.append(element)
+    notify_me = "notify me" in lower_text
+    add_to_cart = "add to cart" in lower_text
+    buy_now = "buy now" in lower_text
 
-    # Identify the nearest ancestor that appears to contain all the size labels.
-    selector = None
-    for element in m_elements:
-        ancestor = element.parent
-
-        for _ in range(5):
-            if ancestor is None:
-                break
-
-            labels = set()
-            for item in ancestor.find_all(
-                ["a", "button", "div", "span", "li"], limit=100
-            ):
-                label = clean(item.get_text(" ", strip=True)).upper()
-                if label in SIZES:
-                    labels.add(label)
-
-            if {"XS", "S", "M", "L", "XL", "XXL"}.issubset(labels):
-                selector = ancestor
-                break
-
-            ancestor = ancestor.parent
-
-        if selector is not None:
-            break
-
-    if selector:
-        labels = sorted({
-            clean(item.get_text(" ", strip=True)).upper()
-            for item in selector.find_all(
-                ["a", "button", "div", "span", "li"], limit=100
-            )
-            if clean(item.get_text(" ", strip=True)).upper() in SIZES
-        })
-
-        result.append("SIZE SELECTOR: FOUND")
-        result.append("SIZE LABELS: " + ", ".join(labels))
-        result.append(
-            "SELECTOR DETAILS: "
-            + short({
-                "tag": selector.name,
-                "class": selector.get("class", []),
-                "style": selector.get("style", ""),
-            })
+    if strike_marker:
+        print_report(
+            "LIKELY OUT OF STOCK",
+            "Size M contains the grey strike-through overlay seen on "
+            "unavailable sizes.",
+            "Keep monitoring. Recheck the actual page before purchasing; "
+            "this detection relies on Flipkart's current HTML styling.",
         )
+        return
 
-        m_control = next(
-            (
-                item for item in selector.find_all(
-                    ["a", "button", "div", "span", "li"]
-                )
-                if clean(item.get_text(" ", strip=True)).upper() == "M"
-            ),
-            None,
+    if notify_me and not (add_to_cart or buy_now):
+        print_report(
+            "LIKELY UNAVAILABLE",
+            "The page contains 'Notify Me', with no detected purchase action.",
+            "Verify Black and M in a browser. The message may refer to the "
+            "currently selected variant.",
         )
+        return
 
-        if m_control:
-            result.append(
-                "SIZE M CONTROL: "
-                + short({
-                    "tag": m_control.name,
-                    "class": m_control.get("class", []),
-                    "style": m_control.get("style", ""),
-                    "aria_disabled": m_control.get("aria-disabled"),
-                    "disabled": m_control.has_attr("disabled"),
-                    "link": m_control.get("href"),
-                })
-            )
-            result.append(
-                "M CONTROL HTML: " + short(str(m_control), 350)
-            )
-    else:
-        result.append("SIZE SELECTOR: NOT RELIABLY IDENTIFIED")
-        result.append(
-            f"EXACT M TEXT ELEMENTS: {len(m_elements)}"
-        )
-
-    # These are page-wide signals only, not proof for Black + M.
-    signals = []
-    for phrase in (
-        "out of stock",
-        "sold out",
-        "currently unavailable",
-        "add to cart",
-        "buy now",
-        "notify me",
-    ):
-        if phrase in upper_text:
-            signals.append(phrase)
-
-    result.append(
-        "PAGE-WIDE STOCK WORDS: "
-        + (", ".join(signals) if signals else "No known phrases found")
+    # Do not claim in-stock just because the size link exists.
+    print_report(
+        "UNKNOWN",
+        "The M link exists, but no confirmed availability indicator was found. "
+        f"Purchase text found: Add to Cart={add_to_cart}, Buy Now={buy_now}.",
+        "Inspect the current variant's purchase state. Do not send an "
+        "in-stock alert until availability is confirmed.",
     )
-    result.append("FINAL STOCK STATUS: UNKNOWN")
-    result.append(
-        "WHY: Page text and size labels alone cannot prove that the "
-        "Black + M variant is purchasable."
-    )
-
-    if selector:
-        result.append(
-            "NEXT STEP: Inspect the reported M control and determine "
-            "whether variant availability is exposed in the page data."
-        )
-    else:
-        result.append(
-            "NEXT STEP: The size selector was not identified. The page "
-            "may need browser automation or a different selector."
-        )
-
-    result.append(
-        "POSSIBLE RESOLUTION: Use browser automation to select Black "
-        "and M, then verify the actual availability or purchase state."
-    )
-    result.append(
-        "ALERTS: Telegram stock alerts are not enabled in this diagnostic version."
-    )
-
-    report(result)
 
 
 if __name__ == "__main__":
