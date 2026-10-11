@@ -4,14 +4,24 @@ name: Flipkart Website Stock Check
 on:
   issues:
     types: [opened]
+  workflow_dispatch:
+    inputs:
+      product_url:
+        description: "Flipkart product URL"
+        required: true
+        type: string
+      request_id:
+        description: "Unique request ID"
+        required: true
+        type: string
 
 permissions:
   contents: write
   issues: write
 
 jobs:
-  check-stock:
-    if: startsWith(github.event.issue.title, 'Stock Check:')
+  issue-check:
+    if: github.event_name == 'issues' && startsWith(github.event.issue.title, 'Stock Check:')
     runs-on: ubuntu-latest
 
     steps:
@@ -45,12 +55,9 @@ jobs:
               parsed = urlparse(url)
               host = (parsed.hostname or "").lower()
 
-              if (
-                  parsed.scheme in ("http", "https")
-                  and (
-                      host == "flipkart.com"
-                      or host.endswith(".flipkart.com")
-                  )
+              if parsed.scheme in ("http", "https") and (
+                  host == "flipkart.com"
+                  or host.endswith(".flipkart.com")
               ):
                   valid.append(url)
 
@@ -78,7 +85,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "docs/results/issue-${{ github.event.issue.number }}.json"
-          git commit -m "Publish stock results for issue #${{ github.event.issue.number }}" || exit 1
+          git commit -m "Publish stock results for issue #${{ github.event.issue.number }}"
           git push
 
       - name: Comment with website link
@@ -96,3 +103,64 @@ jobs:
               issue_number: number,
               body: `Check the website for your stock results: ${url}`
             });
+
+  automatic-check:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate request
+        env:
+          PRODUCT_URL: ${{ inputs.product_url }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from urllib.parse import urlparse
+
+          url = os.environ["PRODUCT_URL"]
+          request_id = os.environ["REQUEST_ID"]
+          parsed = urlparse(url)
+          host = (parsed.hostname or "").lower()
+
+          if (
+              parsed.scheme != "https"
+              or not (host == "flipkart.com" or host.endswith(".flipkart.com"))
+          ):
+              raise SystemExit("Only HTTPS Flipkart URLs are allowed.")
+
+          if not re.fullmatch(r"[a-f0-9-]{36}", request_id):
+              raise SystemExit("Invalid request ID.")
+          PY
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run stock checker
+        env:
+          PRODUCT_URL: ${{ inputs.product_url }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          mkdir -p docs/results
+          python stock_check.py \
+            "$PRODUCT_URL" \
+            "docs/results/${REQUEST_ID}.json"
+
+      - name: Publish automatic result
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/results/${REQUEST_ID}.json"
+          git commit -m "Publish automatic stock result ${REQUEST_ID}"
+          git push
