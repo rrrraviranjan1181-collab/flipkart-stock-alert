@@ -4,15 +4,22 @@ name: Flipkart Website Stock Check
 on:
   issues:
     types: [opened]
+
   workflow_dispatch:
     inputs:
       product_url:
         description: "Flipkart product URL"
         required: true
         type: string
+
       request_id:
         description: "Unique request ID"
         required: true
+        type: string
+
+      monitor_id:
+        description: "Monitor ID for recurring checks"
+        required: false
         type: string
 
 permissions:
@@ -113,6 +120,7 @@ jobs:
         env:
           PRODUCT_URL: ${{ inputs.product_url }}
           REQUEST_ID: ${{ inputs.request_id }}
+          MONITOR_ID: ${{ inputs.monitor_id }}
         run: |
           python - <<'PY'
           import os
@@ -121,17 +129,27 @@ jobs:
 
           url = os.environ["PRODUCT_URL"]
           request_id = os.environ["REQUEST_ID"]
+          monitor_id = os.environ.get("MONITOR_ID", "")
+
           parsed = urlparse(url)
           host = (parsed.hostname or "").lower()
 
           if (
               parsed.scheme != "https"
-              or not (host == "flipkart.com" or host.endswith(".flipkart.com"))
+              or not (
+                  host == "flipkart.com"
+                  or host.endswith(".flipkart.com")
+              )
           ):
               raise SystemExit("Only HTTPS Flipkart URLs are allowed.")
 
           if not re.fullmatch(r"[a-f0-9-]{36}", request_id):
               raise SystemExit("Invalid request ID.")
+
+          if monitor_id and not re.fullmatch(
+              r"[a-f0-9-]{36}", monitor_id
+          ):
+              raise SystemExit("Invalid monitor ID.")
           PY
 
       - name: Checkout repository
