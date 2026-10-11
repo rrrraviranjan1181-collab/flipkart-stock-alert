@@ -1,27 +1,29 @@
 
+
 name: User Stock Monitor
 
 on:
   workflow_dispatch:
     inputs:
       product_url:
-        description: "Product URL supplied by the monitor"
+        description: "Flipkart product URL"
         required: true
         type: string
       request_id:
-        description: "Unique ID for this check"
+        description: "Unique request ID"
         required: true
         type: string
       monitor_id:
-        description: "Monitor ID in the database"
-        required: true
+        description: "Monitor ID, blank for one-time checks"
+        required: false
         type: string
+        default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: stock-monitor-${{ inputs.monitor_id }}
+  group: stock-monitor-${{ inputs.monitor_id || inputs.request_id }}
   cancel-in-progress: false
 
 jobs:
@@ -37,28 +39,24 @@ jobs:
           MONITOR_ID: ${{ inputs.monitor_id }}
         run: |
           python - <<'PY'
-          import os
-          import re
+          import os, re
           from urllib.parse import urlparse
 
           url = os.environ["PRODUCT_URL"]
           parsed = urlparse(url)
           host = (parsed.hostname or "").lower()
 
-          if (
-              parsed.scheme != "https"
-              or not (
-                  host == "flipkart.com"
-                  or host.endswith(".flipkart.com")
-              )
+          if parsed.scheme != "https" or not (
+              host == "flipkart.com" or host.endswith(".flipkart.com")
           ):
               raise SystemExit("Only HTTPS Flipkart URLs are allowed.")
 
-          for name in ("REQUEST_ID", "MONITOR_ID"):
-              if not re.fullmatch(
-                  r"[a-fA-F0-9-]{36}", os.environ[name]
-              ):
-                  raise SystemExit(f"Invalid {name}.")
+          if not re.fullmatch(r"[a-fA-F0-9-]{36}", os.environ["REQUEST_ID"]):
+              raise SystemExit("Invalid REQUEST_ID.")
+
+          monitor_id = os.environ.get("MONITOR_ID", "").strip()
+          if monitor_id and not re.fullmatch(r"[a-fA-F0-9-]{36}", monitor_id):
+              raise SystemExit("Invalid MONITOR_ID.")
           PY
 
       - name: Checkout repository
@@ -78,10 +76,48 @@ jobs:
           OUTPUT_JSON: result.json
         run: python app.py
 
+      - name: Send result to Cloudflare
+        env:
+          CALLBACK_SECRET: ${{ secrets.CLOUDFLARE_CALLBACK_SECRET }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          MONITOR_ID: ${{ inputs.monitor_id }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+
+          secret = os.environ["CALLBACK_SECRET"]
+          if not secret:
+              raise SystemExit("CLOUDFLARE_CALLBACK_SECRET is missing.")
+
+          with open("result.json", encoding="utf-8") as f:
+              result = json.load(f)
+
+          payload = json.dumps({
+              "request_id": os.environ["REQUEST_ID"],
+              "monitor_id": os.environ.get("MONITOR_ID", ""),
+              "result": result
+          }).encode()
+
+          req = urllib.request.Request(
+              "https://flipkart-stock-api.rraviranj1181.workers.dev/result-callback",
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Callback-Secret": secret
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(req, timeout=30) as response:
+              print("Callback HTTP status:", response.status)
+              print(response.read().decode())
+          PY
+
       - name: Save result artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: stock-result-${{ inputs.request_id }}
           path: result.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
