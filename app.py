@@ -1,10 +1,9 @@
 
-import re
-import sys
 import requests
 from bs4 import BeautifulSoup
+import re
 
-URL = (PRODUCT_URL = "https://www.flipkart.com/puma-military-camouflage-men-crew-neck-black-t-shirt/p/itm5336dfb62fa01?pid=TSHHP6ADWYWKBJV2")
+PRODUCT_URL = "https://www.flipkart.com/puma-military-camouflage-men-crew-neck-black-t-shirt/p/itm5336dfb62fa01?pid=TSHHP6ADWYWKBJV2"
 
 SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
 
@@ -14,112 +13,73 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "en-IN,en;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
-def clean(text):
-    return re.sub(r"\s+", " ", text or "").strip()
+def check_stock():
+    print("=" * 45)
+    print("FLIPKART T-SHIRT STOCK CHECK")
+    print("=" * 45)
+    print("Product: Puma Military Camouflage Black T-shirt")
+    print("Checking product page...\n")
 
-
-def is_struck_out(element):
-    """Look for the grey strike-through observed on unavailable sizes."""
-    for node in [element, *element.find_all(True)]:
-        style = node.get("style", "")
-
-        grey_line = (
-            re.search(r"height\s*:\s*1px", style, re.I)
-            and re.search(
-                r"background-color\s*:\s*(#d6d6d6ff|#d6d6d6)",
-                style,
-                re.I,
-            )
-        )
-
-        line_through = re.search(
-            r"text-decoration(?:-line)?\s*:\s*[^;]*line-through",
-            style,
-            re.I,
-        )
-
-        if grey_line or line_through:
-            return True
-
-    return False
-
-
-def main():
     try:
-        response = requests.get(URL, headers=HEADERS, timeout=25)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        print("\n========== STOCK CHECK REPORT ==========")
-        print("RESULT: CHECK FAILED")
-        print("ERROR:", clean(str(exc))[:200])
-        print("FIX: Check the URL, network, or possible website blocking.")
-        print("========================================")
-        sys.exit(1)
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    page_text = clean(soup.get_text(" ", strip=True)).lower()
-
-    # Find size links that look like product variant selectors.
-    links_by_size = {size: [] for size in SIZES}
-
-    for link in soup.find_all("a", href=True):
-        label = clean(link.get_text(" ", strip=True)).upper()
-        href = link.get("href", "").lower()
-
-        if label in SIZES and (
-            "swatchattr=" in href or "pid=" in href
-        ):
-            links_by_size[label].append(link)
-
-    print("\n========== STOCK CHECK REPORT ==========")
-    print("PRODUCT: Adidas Black Round Neck T-Shirt")
-    print("PAGE STATUS: Loaded successfully")
-    print("COLOUR: BLACK")
-    print("----------------------------------------")
-
-    found = 0
-    for size in SIZES:
-        links = links_by_size[size]
-
-        if not links:
-            print(f"{size:>3}: UNKNOWN - size selector not found")
-            continue
-
-        found += 1
-        # Prefer the link containing a product variant identifier.
-        link = max(
-            links,
-            key=lambda item: len(item.get("href", "")),
+        response = requests.get(
+            PRODUCT_URL,
+            headers=HEADERS,
+            timeout=30,
         )
 
-        if is_struck_out(link):
-            print(f"{size:>3}: LIKELY OUT OF STOCK - strike-through detected")
-        else:
-            print(
-                f"{size:>3}: UNKNOWN - no strike-through detected; "
-                "stock not confirmed"
-            )
+        print(f"HTTP Status: {response.status_code}")
 
-    print("----------------------------------------")
-    print(f"SIZES FOUND: {found}/{len(SIZES)}")
+        if response.status_code != 200:
+            print("ERROR: Could not access the product page.")
+            print("Stock status: UNKNOWN")
+            return
 
-    if found == len(SIZES):
-        print("CHECK: All six size selectors were found.")
-    else:
-        print("CHECK: Some sizes could not be identified in the HTML.")
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_text = soup.get_text(" ", strip=True)
 
-    if "notify me" in page_text:
-        print("PAGE CLUE: 'Notify Me' appears on the page.")
-        print("NOTE: This may refer only to the currently selected variant.")
+        print(f"Page title: {soup.title.get_text(strip=True) if soup.title else 'Not found'}")
+        print("\nSIZE RESULTS")
+        print("-" * 45)
 
-    print("IN-STOCK CONFIRMATION: Not yet implemented.")
-    print("========================================")
-    print("Copy this report and send it to ChatGPT.")
+        # Find size labels in the page text.
+        # This is a diagnostic check, not definitive proof of stock.
+        for size in SIZES:
+            found = False
+
+            for element in soup.find_all(["a", "button", "div", "span"]):
+                text = element.get_text(" ", strip=True)
+
+                if text == size:
+                    found = True
+                    break
+
+            if found:
+                print(f"{size}: Size label found — availability UNKNOWN")
+            else:
+                print(f"{size}: Size label not found — availability UNKNOWN")
+
+        print("\nPAGE DIAGNOSTICS")
+        print("-" * 45)
+
+        for phrase in ["Add to cart", "Buy now", "Notify Me", "Out of Stock"]:
+            print(f"{phrase}: {'Found' if phrase.lower() in page_text.lower() else 'Not found'}")
+
+        print("\nIMPORTANT:")
+        print("Finding a size label does NOT prove that size is in stock.")
+        print("This script does not yet reliably verify each size's availability.")
+        print("Compare these results with the sizes you check manually.")
+
+    except requests.RequestException as error:
+        print(f"Request error: {error}")
+        print("Stock status: UNKNOWN")
+    except Exception as error:
+        print(f"Unexpected error: {error}")
+        print("Stock status: UNKNOWN")
 
 
 if __name__ == "__main__":
-    main()
+    check_stock()
