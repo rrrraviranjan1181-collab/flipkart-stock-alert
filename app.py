@@ -1,12 +1,30 @@
 
 import re
+import sys
 import requests
-from bs4 import BeautifulSoup
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("""
+========== FLIPKART MONITOR REPORT ==========
+RESULT: FAILED
+PROBLEM: Python package 'beautifulsoup4' is missing.
+RESOLUTION:
+1. Add beautifulsoup4 to requirements.txt.
+2. Re-run GitHub Actions.
+=============================================
+""")
+    sys.exit(1)
+
 
 URL = (
     "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/"
     "p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART"
 )
+
+TARGET_COLOR = "BLACK"
+TARGET_SIZE = "M"
 
 HEADERS = {
     "User-Agent": (
@@ -17,59 +35,193 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9",
 }
 
+SIZES = {"XS", "S", "M", "L", "XL", "XXL"}
 
-def clean(text):
-    return re.sub(r"\s+", " ", text or "").strip()
+
+def clean(value):
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def short(value, limit=180):
+    value = clean(str(value))
+    return value[:limit] + ("..." if len(value) > limit else "")
+
+
+def report(lines):
+    print("\n========== FLIPKART MONITOR REPORT ==========")
+    for line in lines:
+        print(line)
+    print("=============================================")
+    print("Copy the report above and send it to ChatGPT.")
 
 
 def main():
-    response = requests.get(URL, headers=HEADERS, timeout=30)
-    print("HTTP status:", response.status_code)
-    response.raise_for_status()
+    result = [
+        "PRODUCT: Adidas Black Round Neck T-Shirt",
+        f"TARGET VARIANT: {TARGET_COLOR}, size {TARGET_SIZE}",
+    ]
+
+    try:
+        response = requests.get(URL, headers=HEADERS, timeout=25)
+    except requests.RequestException as exc:
+        report([
+            *result,
+            "RESULT: FAILED",
+            f"PROBLEM: Website request failed: {short(exc, 220)}",
+            "RESOLUTION: Check the internet connection, timeout, or "
+            "whether Flipkart is blocking automated requests.",
+        ])
+        return
+
+    result.append(f"HTTP STATUS: {response.status_code}")
+
+    if response.status_code != 200:
+        result.extend([
+            "RESULT: PAGE NOT LOADED SUCCESSFULLY",
+            "PROBLEM: Flipkart did not return HTTP 200.",
+            "RESOLUTION: Check the product URL and retry later. "
+            "A 403/429 may indicate blocking or rate limiting.",
+        ])
+        report(result)
+        return
 
     soup = BeautifulSoup(response.text, "html.parser")
-    text = clean(soup.get_text(" ", strip=True))
+    page_text = clean(soup.get_text(" ", strip=True))
+    upper_text = page_text.upper()
 
-    print("Page title:", soup.title.get_text(strip=True) if soup.title else "Missing")
-    print("Black colour mentioned:", "BLACK" in text.upper())
+    title = soup.title.get_text(" ", strip=True) if soup.title else "Not found"
+    result.append(f"PAGE TITLE: {short(title, 150)}")
+    result.append(
+        "BLACK COLOUR TEXT: "
+        + ("FOUND" if TARGET_COLOR in upper_text else "NOT FOUND")
+    )
 
-    print("\n--- SIZE SELECTOR MARKUP ---")
-    found = 0
+    # Find exact M elements without printing the entire HTML page.
+    m_elements = []
+    for element in soup.find_all(["a", "button", "div", "span", "li"]):
+        if clean(element.get_text(" ", strip=True)).upper() == TARGET_SIZE:
+            m_elements.append(element)
 
-    for element in soup.find_all("div", class_="css-g5y9jx"):
-        element_text = clean(element.get_text(" ", strip=True))
+    # Identify the nearest ancestor that appears to contain all the size labels.
+    selector = None
+    for element in m_elements:
+        ancestor = element.parent
 
-        if "XS" in element_text and "XXL" in element_text:
-            print(element.prettify()[:12000])
-            found += 1
+        for _ in range(5):
+            if ancestor is None:
+                break
 
-    if not found:
-        print("The expected size selector was not found.")
+            labels = set()
+            for item in ancestor.find_all(
+                ["a", "button", "div", "span", "li"], limit=100
+            ):
+                label = clean(item.get_text(" ", strip=True)).upper()
+                if label in SIZES:
+                    labels.add(label)
 
-    print("\n--- SIZE M ELEMENTS ---")
-    count = 0
+            if {"XS", "S", "M", "L", "XL", "XXL"}.issubset(labels):
+                selector = ancestor
+                break
 
-    for element in soup.find_all(["a", "button", "div", "span"]):
-        if clean(element.get_text(" ", strip=True)) != "M":
-            continue
+            ancestor = ancestor.parent
 
-        print({
-            "tag": element.name,
-            "text": clean(element.get_text(" ", strip=True)),
-            "class": element.get("class", []),
-            "href": element.get("href"),
-            "style": element.get("style"),
-            "aria_disabled": element.get("aria-disabled"),
-            "disabled": element.has_attr("disabled"),
-            "outer_html": str(element)[:1500],
-        })
-
-        count += 1
-        if count >= 12:
+        if selector is not None:
             break
 
-    print("\nInspection complete.")
-    print("No stock status has been inferred from size text alone.")
+    if selector:
+        labels = sorted({
+            clean(item.get_text(" ", strip=True)).upper()
+            for item in selector.find_all(
+                ["a", "button", "div", "span", "li"], limit=100
+            )
+            if clean(item.get_text(" ", strip=True)).upper() in SIZES
+        })
+
+        result.append("SIZE SELECTOR: FOUND")
+        result.append("SIZE LABELS: " + ", ".join(labels))
+        result.append(
+            "SELECTOR DETAILS: "
+            + short({
+                "tag": selector.name,
+                "class": selector.get("class", []),
+                "style": selector.get("style", ""),
+            })
+        )
+
+        m_control = next(
+            (
+                item for item in selector.find_all(
+                    ["a", "button", "div", "span", "li"]
+                )
+                if clean(item.get_text(" ", strip=True)).upper() == "M"
+            ),
+            None,
+        )
+
+        if m_control:
+            result.append(
+                "SIZE M CONTROL: "
+                + short({
+                    "tag": m_control.name,
+                    "class": m_control.get("class", []),
+                    "style": m_control.get("style", ""),
+                    "aria_disabled": m_control.get("aria-disabled"),
+                    "disabled": m_control.has_attr("disabled"),
+                    "link": m_control.get("href"),
+                })
+            )
+            result.append(
+                "M CONTROL HTML: " + short(str(m_control), 350)
+            )
+    else:
+        result.append("SIZE SELECTOR: NOT RELIABLY IDENTIFIED")
+        result.append(
+            f"EXACT M TEXT ELEMENTS: {len(m_elements)}"
+        )
+
+    # These are page-wide signals only, not proof for Black + M.
+    signals = []
+    for phrase in (
+        "out of stock",
+        "sold out",
+        "currently unavailable",
+        "add to cart",
+        "buy now",
+        "notify me",
+    ):
+        if phrase in upper_text:
+            signals.append(phrase)
+
+    result.append(
+        "PAGE-WIDE STOCK WORDS: "
+        + (", ".join(signals) if signals else "No known phrases found")
+    )
+    result.append("FINAL STOCK STATUS: UNKNOWN")
+    result.append(
+        "WHY: Page text and size labels alone cannot prove that the "
+        "Black + M variant is purchasable."
+    )
+
+    if selector:
+        result.append(
+            "NEXT STEP: Inspect the reported M control and determine "
+            "whether variant availability is exposed in the page data."
+        )
+    else:
+        result.append(
+            "NEXT STEP: The size selector was not identified. The page "
+            "may need browser automation or a different selector."
+        )
+
+    result.append(
+        "POSSIBLE RESOLUTION: Use browser automation to select Black "
+        "and M, then verify the actual availability or purchase state."
+    )
+    result.append(
+        "ALERTS: Telegram stock alerts are not enabled in this diagnostic version."
+    )
+
+    report(result)
 
 
 if __name__ == "__main__":
