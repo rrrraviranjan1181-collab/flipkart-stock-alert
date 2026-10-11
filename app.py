@@ -1,18 +1,13 @@
 
-import re
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-
-DEFAULT_PRODUCT_URL = (
-    "https://www.flipkart.com/puma-solid-men-polo-neck-white-t-shirt/"
-    "p/itm7250ad5444da3?pid=TSHH4D2FGURWBGAS"
-)
 
 HEADERS = {
     "User-Agent": (
@@ -29,13 +24,14 @@ SIZE_PATTERN = re.compile(
 )
 
 
-def validate_url(url):
+def valid_url(url):
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
         return (
             parsed.scheme == "https"
-            and (host == "flipkart.com" or host.endswith(".flipkart.com"))
+            and (host == "flipkart.com"
+                 or host.endswith(".flipkart.com"))
         )
     except Exception:
         return False
@@ -52,7 +48,7 @@ def find_sizes(soup):
         if not SIZE_PATTERN.fullmatch(size):
             continue
 
-        nested_match = element.find(
+        nested = element.find(
             lambda child: (
                 child.name in [
                     "a", "button", "div", "span", "li", "label"
@@ -61,10 +57,8 @@ def find_sizes(soup):
             )
         )
 
-        if nested_match:
-            continue
-
-        found.setdefault(size, element)
+        if not nested:
+            found.setdefault(size, element)
 
     return found
 
@@ -90,7 +84,7 @@ def get_status(element):
         color = re.search(r"color\s*:\s*#([0-9a-f]{6,8})", style)
 
         if color and color.group(1)[:6] == "707070":
-            return "OUT OF STOCK", "Grey text (#707070)"
+            return "OUT OF STOCK", "Grey text detected"
 
         if (
             str(current.get("aria-disabled", "")).lower() == "true"
@@ -100,13 +94,13 @@ def get_status(element):
 
         current = current.parent
 
-    return "AVAILABLE", "No grey/cross-out indicator detected"
+    return "AVAILABLE", "No unavailable indicator detected"
 
 
-def check_product(product_url):
+def check_product(url):
     result = {
         "ok": False,
-        "product_url": product_url,
+        "product_url": url,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "product_name": None,
         "http_status": None,
@@ -114,15 +108,13 @@ def check_product(product_url):
         "error": None,
     }
 
-    if not validate_url(product_url):
-        result["error"] = "Only HTTPS Flipkart product URLs are allowed."
+    if not valid_url(url):
+        result["error"] = "Only HTTPS Flipkart URLs are supported."
         return result
 
     try:
         response = requests.get(
-            product_url,
-            headers=HEADERS,
-            timeout=30,
+            url, headers=HEADERS, timeout=30
         )
         result["http_status"] = response.status_code
 
@@ -135,13 +127,15 @@ def check_product(product_url):
         soup = BeautifulSoup(response.text, "html.parser")
 
         if soup.title:
-            result["product_name"] = soup.title.get_text(" ", strip=True)
+            result["product_name"] = soup.title.get_text(
+                " ", strip=True
+            )
 
         sizes = find_sizes(soup)
 
         if not sizes:
             result["error"] = (
-                "No sizes detected. Stock status could not be determined."
+                "No sizes detected; stock status is unknown."
             )
             return result
 
@@ -166,62 +160,30 @@ def check_product(product_url):
 
 
 def main():
-    product_url = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else os.environ.get("PRODUCT_URL", DEFAULT_PRODUCT_URL)
+    url = os.environ.get("PRODUCT_URL") or (
+        sys.argv[1] if len(sys.argv) > 1 else ""
+    )
+    output_path = os.environ.get("OUTPUT_JSON") or (
+        sys.argv[2] if len(sys.argv) > 2 else ""
     )
 
-    output_path = (
-        sys.argv[2]
-        if len(sys.argv) > 2
-        else os.environ.get("OUTPUT_JSON", "")
-    )
+    if not url:
+        print("ERROR: Supply a product URL.")
+        sys.exit(2)
 
-    print("=" * 52)
-    print("FLIPKART SIZE STOCK CHECKER")
-    print("=" * 52)
-    print("URL:", product_url)
+    result = check_product(url)
 
-    result = check_product(product_url)
-
-    print("HTTP status:", result["http_status"])
-    print("Page title:", result["product_name"] or "Unavailable")
-
-    print("\nSIZE-BY-SIZE RESULTS")
-    print("-" * 52)
-
-    for item in result["sizes"]:
-        print(
-            f'{item["size"]}: {item["status"]} '
-            f'({item["reason"]})'
-        )
-
-    if result["error"]:
-        print("\nERROR:", result["error"])
-
-    available = [
-        item["size"] for item in result["sizes"]
-        if item["status"] == "AVAILABLE"
-    ]
-    out_of_stock = [
-        item["size"] for item in result["sizes"]
-        if item["status"] == "OUT OF STOCK"
-    ]
-
-    print("\nSUMMARY")
-    print("-" * 52)
-    print("Available:", ", ".join(available) or "None")
-    print("Out of stock:", ", ".join(out_of_stock) or "None")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as file:
-            json.dump(result, file, ensure_ascii=False, indent=2)
-        print("\nJSON result saved to:", output_path)
+            json.dump(result, file, indent=2, ensure_ascii=False)
 
+    # A failed stock check is recorded in JSON rather than
+    # silently being reported as a successful stock result.
     if not result["ok"]:
-        sys.exit(1)
+        print("Stock result is unknown:", result["error"])
 
 
 if __name__ == "__main__":
