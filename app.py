@@ -1,10 +1,15 @@
 
-
 import re
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
 import requests
 from bs4 import BeautifulSoup
 
-PRODUCT_URL = (
+DEFAULT_PRODUCT_URL = (
     "https://www.flipkart.com/puma-solid-men-polo-neck-white-t-shirt/"
     "p/itm7250ad5444da3?pid=TSHH4D2FGURWBGAS"
 )
@@ -24,8 +29,19 @@ SIZE_PATTERN = re.compile(
 )
 
 
+def validate_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return (
+            parsed.scheme == "https"
+            and (host == "flipkart.com" or host.endswith(".flipkart.com"))
+        )
+    except Exception:
+        return False
+
+
 def find_sizes(soup):
-    """Find size labels and their corresponding HTML elements."""
     found = {}
 
     for element in soup.find_all(
@@ -36,8 +52,6 @@ def find_sizes(soup):
         if not SIZE_PATTERN.fullmatch(size):
             continue
 
-        # Ignore a container if it contains a smaller element
-        # with the same exact size label.
         nested_match = element.find(
             lambda child: (
                 child.name in [
@@ -56,7 +70,6 @@ def find_sizes(soup):
 
 
 def get_status(element):
-    """Inspect the size text and nearby elements."""
     current = element
 
     for _ in range(4):
@@ -67,7 +80,6 @@ def get_status(element):
         classes = " ".join(current.get("class", [])).lower()
         combined = style + " " + classes
 
-        # Explicit strike-through.
         if re.search(
             r"text-decoration\s*:[^;]*line-through|"
             r"line-through|strikethrough|strike-through",
@@ -75,16 +87,11 @@ def get_status(element):
         ):
             return "OUT OF STOCK", "Strike-through detected"
 
-        # Grey text observed on crossed-out Flipkart sizes.
-        color = re.search(
-            r"color\s*:\s*#([0-9a-f]{6,8})",
-            style,
-        )
+        color = re.search(r"color\s*:\s*#([0-9a-f]{6,8})", style)
 
         if color and color.group(1)[:6] == "707070":
             return "OUT OF STOCK", "Grey text (#707070)"
 
-        # Check explicit disabled indicators.
         if (
             str(current.get("aria-disabled", "")).lower() == "true"
             or current.has_attr("disabled")
@@ -93,73 +100,128 @@ def get_status(element):
 
         current = current.parent
 
-    # User's working rule: sizes without the grey/crossed-out
-    # indicator are considered available.
     return "AVAILABLE", "No grey/cross-out indicator detected"
 
 
-def main():
-    print("=" * 52)
-    print("FLIPKART SIZE STOCK CHECKER")
-    print("=" * 52)
-    print("URL:", PRODUCT_URL)
+def check_product(product_url):
+    result = {
+        "ok": False,
+        "product_url": product_url,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "product_name": None,
+        "http_status": None,
+        "sizes": [],
+        "error": None,
+    }
+
+    if not validate_url(product_url):
+        result["error"] = "Only HTTPS Flipkart product URLs are allowed."
+        return result
 
     try:
         response = requests.get(
-            PRODUCT_URL,
+            product_url,
             headers=HEADERS,
             timeout=30,
         )
-
-        print("HTTP status:", response.status_code)
+        result["http_status"] = response.status_code
 
         if response.status_code != 200:
-            print("ERROR: Product page could not be loaded.")
-            print("Stock results are unavailable.")
-            return
+            result["error"] = (
+                f"Product page returned HTTP {response.status_code}."
+            )
+            return result
 
         soup = BeautifulSoup(response.text, "html.parser")
 
         if soup.title:
-            print("Page title:", soup.title.get_text(" ", strip=True))
+            result["product_name"] = soup.title.get_text(" ", strip=True)
 
         sizes = find_sizes(soup)
 
-        print("\nSIZE-BY-SIZE RESULTS")
-        print("-" * 52)
-
         if not sizes:
-            print("No sizes found in the downloaded HTML.")
-            print("The page may require browser-based rendering.")
-            return
-
-        available = []
-        out_of_stock = []
+            result["error"] = (
+                "No sizes detected. Stock status could not be determined."
+            )
+            return result
 
         for size, element in sizes.items():
             status, reason = get_status(element)
-            print(f"{size}: {status} ({reason})")
+            result["sizes"].append({
+                "size": size,
+                "status": status,
+                "reason": reason,
+            })
 
-            if status == "AVAILABLE":
-                available.append(size)
-            else:
-                out_of_stock.append(size)
-
-        print("\nSUMMARY")
-        print("-" * 52)
-        print("Available:", ", ".join(available) or "None")
-        print("Out of stock:", ", ".join(out_of_stock) or "None")
-        print("Sizes detected:", len(sizes))
-
-        print("\nNote: This uses the grey/cross-out rule observed")
-        print("in your screenshots. Verify on additional products.")
+        result["ok"] = True
+        return result
 
     except requests.RequestException as error:
-        print("REQUEST ERROR:", error)
-        print("Stock results are unavailable.")
+        result["error"] = f"Request failed: {error}"
+        return result
 
     except Exception as error:
-        print("UNEXPECTED ERROR:", repr(error))
+        result["error"] = f"Unexpected error: {error}"
+        return result
+
+
+def main():
+    product_url = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else os.environ.get("PRODUCT_URL", DEFAULT_PRODUCT_URL)
+    )
+
+    output_path = (
+        sys.argv[2]
+        if len(sys.argv) > 2
+        else os.environ.get("OUTPUT_JSON", "")
+    )
+
+    print("=" * 52)
+    print("FLIPKART SIZE STOCK CHECKER")
+    print("=" * 52)
+    print("URL:", product_url)
+
+    result = check_product(product_url)
+
+    print("HTTP status:", result["http_status"])
+    print("Page title:", result["product_name"] or "Unavailable")
+
+    print("\nSIZE-BY-SIZE RESULTS")
+    print("-" * 52)
+
+    for item in result["sizes"]:
+        print(
+            f'{item["size"]}: {item["status"]} '
+            f'({item["reason"]})'
+        )
+
+    if result["error"]:
+        print("\nERROR:", result["error"])
+
+    available = [
+        item["size"] for item in result["sizes"]
+        if item["status"] == "AVAILABLE"
+    ]
+    out_of_stock = [
+        item["size"] for item in result["sizes"]
+        if item["status"] == "OUT OF STOCK"
+    ]
+
+    print("\nSUMMARY")
+    print("-" * 52)
+    print("Available:", ", ".join(available) or "None")
+    print("Out of stock:", ", ".join(out_of_stock) or "None")
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(result, file, ensure_ascii=False, indent=2)
+        print("\nJSON result saved to:", output_path)
+
+    if not result["ok"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
