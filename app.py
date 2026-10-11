@@ -1,5 +1,4 @@
 
-import json
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -17,105 +16,16 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-IN,en;q=0.9",
 }
 
 
-def element_info(element):
-    """Collect evidence from an element and its nearby parent elements."""
-    evidence = []
-
-    current = element
-
-    # Inspect the size element and a few ancestors, since the disabled
-    # state may be attached to a wrapper rather than the text itself.
-    for _ in range(4):
-        if current is None:
-            break
-
-        classes = " ".join(current.get("class", []))
-        style = current.get("style", "")
-        aria_disabled = current.get("aria-disabled", "")
-        disabled = current.has_attr("disabled")
-        data_values = " ".join(
-            str(value)
-            for key, value in current.attrs.items()
-            if key.startswith("data-")
-        )
-
-        combined = " ".join(
-            [classes, style, data_values, str(aria_disabled)]
-        ).lower()
-
-        if classes:
-            evidence.append("class=" + classes)
-        if style:
-            evidence.append("style=" + style)
-        if aria_disabled:
-            evidence.append("aria-disabled=" + str(aria_disabled))
-        if disabled:
-            evidence.append("disabled attribute")
-        if data_values:
-            evidence.append("data attributes=" + data_values[:180])
-
-        current = current.parent
-
-    return " | ".join(evidence), combined if "combined" in locals() else ""
-
-
-def classify_size(element):
-    """Return a status only when the HTML gives a useful indication."""
-    current = element
-    combined = []
-
-    for _ in range(4):
-        if current is None:
-            break
-
-        classes = " ".join(current.get("class", []))
-        style = current.get("style", "")
-        aria_disabled = str(current.get("aria-disabled", ""))
-        data_text = " ".join(
-            str(value)
-            for key, value in current.attrs.items()
-            if key.startswith("data-")
-        )
-
-        combined.append(
-            f"{classes} {style} {aria_disabled} {data_text}".lower()
-        )
-        current = current.parent
-
-    text = " ".join(combined)
-
-    # Explicit disabled/unavailable signals.
-    if re.search(
-        r"aria-disabled\s*=\s*['\"]?true|"
-        r"disabled|out.of.stock|outofstock|unavailable|sold.out",
-        text,
-    ):
-        return "OUT OF STOCK"
-
-    # Explicit strike-through styling.
-    if re.search(r"text-decoration[^;]*line-through", text):
-        return "OUT OF STOCK"
-
-    # Some pages use a pseudo-element or class to draw the diagonal line.
-    # Do not interpret generic grey styling alone as proof.
-    if re.search(r"line-through|strikethrough|strike-through", text):
-        return "OUT OF STOCK"
-
-    # A size label alone is not sufficient evidence of availability.
-    return "UNKNOWN"
-
-
-def find_size_elements(soup):
-    """Find the smallest HTML elements whose text exactly matches a size."""
-    results = {}
+def get_size_elements(soup):
+    """Find the smallest element containing each exact size label."""
+    found = {}
 
     for size in SIZES:
-        matches = []
+        candidates = []
 
         for element in soup.find_all(
             ["a", "button", "div", "span", "li", "label"]
@@ -123,34 +33,83 @@ def find_size_elements(soup):
             if element.get_text(" ", strip=True) != size:
                 continue
 
-            # Avoid choosing large containers that include other size labels.
-            child_has_same_size = any(
-                child.get_text(" ", strip=True) == size
-                for child in element.find_all(
-                    ["a", "button", "div", "span", "li", "label"]
+            # Skip containers that contain another matching size element.
+            if element.find(
+                lambda child: (
+                    child.name in [
+                        "a", "button", "div", "span", "li", "label"
+                    ]
+                    and child.get_text(" ", strip=True) == size
                 )
-            )
-            if child_has_same_size:
+            ):
                 continue
 
-            matches.append(element)
+            candidates.append(element)
 
-        if matches:
-            # Prefer interactive elements over plain text wrappers.
-            matches.sort(
-                key=lambda element: (
-                    0 if element.name in ("button", "a", "label") else 1
+        if candidates:
+            # Prefer the size text element carrying the actual color.
+            candidates.sort(
+                key=lambda e: (
+                    0 if re.search(
+                        r"color\s*:",
+                        e.get("style", ""),
+                        re.IGNORECASE,
+                    ) else 1,
+                    len(str(e)),
                 )
             )
-            results[size] = matches[0]
+            found[size] = candidates[0]
 
-    return results
+    return found
+
+
+def inspect_size(element):
+    """Inspect the size element and its ancestors for stock indicators."""
+    current = element
+
+    for _ in range(4):
+        if current is None:
+            break
+
+        style = current.get("style", "").lower()
+        classes = " ".join(current.get("class", [])).lower()
+        aria_disabled = str(
+            current.get("aria-disabled", "")
+        ).lower()
+
+        # Explicit unavailable state.
+        if aria_disabled == "true" or current.has_attr("disabled"):
+            return "OUT OF STOCK", "Disabled HTML control"
+
+        # Explicit strike-through styling.
+        if re.search(
+            r"text-decoration\s*:[^;]*line-through|"
+            r"line-through|strikethrough|strike-through",
+            style + " " + classes,
+        ):
+            return "OUT OF STOCK", "Strike-through indicator"
+
+        # Color used by the grey crossed-out sizes in your observed HTML.
+        color = re.search(
+            r"color\s*:\s*#([0-9a-f]{6,8})",
+            style,
+        )
+
+        if color:
+            hex_color = color.group(1)[:6]
+
+            if hex_color == "707070":
+                return "OUT OF STOCK", "Grey size text (#707070)"
+
+        current = current.parent
+
+    return "UNKNOWN", "No recognised stock indicator"
 
 
 def main():
-    print("=" * 52)
+    print("=" * 50)
     print("FLIPKART SIZE STOCK CHECKER")
-    print("=" * 52)
+    print("=" * 50)
     print("Product: Puma Military Camouflage Black T-shirt")
     print("URL:", PRODUCT_URL)
     print()
@@ -161,63 +120,71 @@ def main():
             headers=HEADERS,
             timeout=30,
         )
+
         print("HTTP status:", response.status_code)
 
         if response.status_code != 200:
-            print("RESULT: UNKNOWN — product page could not be loaded.")
+            print("ERROR: Could not load product page.")
+            print("Stock status: UNKNOWN")
             return
 
         soup = BeautifulSoup(response.text, "html.parser")
-        title = (
-            soup.title.get_text(" ", strip=True)
-            if soup.title
-            else "Title not found"
-        )
-        print("Page title:", title)
 
-        page_text = soup.get_text(" ", strip=True).lower()
+        if soup.title:
+            print("Page title:", soup.title.get_text(" ", strip=True))
 
-        # Basic page-level diagnostic only; this is not a size-specific test.
-        print("\nPAGE DIAGNOSTICS")
-        for phrase in ["Add to cart", "Buy now", "Notify Me", "Out of Stock"]:
-            print(
-                f"{phrase}: "
-                f"{'Found' if phrase.lower() in page_text else 'Not found'}"
-            )
-
-        size_elements = find_size_elements(soup)
+        size_elements = get_size_elements(soup)
 
         print("\nSIZE-BY-SIZE RESULTS")
-        print("-" * 52)
+        print("-" * 50)
+
+        available = []
+        out_of_stock = []
+        unknown = []
 
         for size in SIZES:
             element = size_elements.get(size)
 
             if element is None:
-                print(f"{size}: UNKNOWN — size label not found in HTML")
-                continue
+                status = "UNKNOWN"
+                reason = "Size label not found"
+            else:
+                status, reason = inspect_size(element)
 
-            status = classify_size(element)
-            evidence, _ = element_info(element)
+            print(f"{size}: {status} ({reason})")
 
-            print(f"{size}: {status}")
-            print("  HTML tag:", element.name)
-            print("  Evidence:", evidence[:500] if evidence else "No useful attributes")
+            if status == "AVAILABLE":
+                available.append(size)
+            elif status == "OUT OF STOCK":
+                out_of_stock.append(size)
+            else:
+                unknown.append(size)
 
-        print("\nIMPORTANT")
-        print("-" * 52)
-        print("UNKNOWN means the downloaded HTML did not prove the status.")
-        print("A size label or Add to cart text does not prove every size is available.")
-        print("If the strike-through is drawn by browser-only CSS, this script")
-        print("may need browser automation to verify the actual selected size.")
+        print("\nSUMMARY")
+        print("-" * 50)
+        print(
+            "Available:",
+            ", ".join(available) if available else "None confirmed",
+        )
+        print(
+            "Out of stock:",
+            ", ".join(out_of_stock) if out_of_stock else "None detected",
+        )
+        print(
+            "Unknown:",
+            ", ".join(unknown) if unknown else "None",
+        )
+
+        print("\nNote: A size is marked available only when a")
+        print("positive availability indicator is implemented and verified.")
 
     except requests.RequestException as error:
         print("REQUEST ERROR:", error)
-        print("All sizes: UNKNOWN")
+        print("Stock status: UNKNOWN")
 
     except Exception as error:
         print("UNEXPECTED ERROR:", repr(error))
-        print("All sizes: UNKNOWN")
+        print("Stock status: UNKNOWN")
 
 
 if __name__ == "__main__":
