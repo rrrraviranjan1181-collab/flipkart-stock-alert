@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "title": "Allen Solly Colorblock Men Polo Neck Maroon T-Shirt - Buy Allen Solly Colorblock Men Polo Neck Maroon T-Shirt Online at Best Prices in India | Flipkart.com",
+  "product_url": "https://www.flipkart.com/allen-solly-colorblock-men-polo-neck-maroon-t-shirt/p/itm1aef3bc5f08bd?pid=TSHGV53ZBD3QV7FQ&lid=LSTTSHGV53ZBD3QV7FQ8KXK0S&hl_lid=&marketplace=FLIPKART&fm=eyJ3dHAiOiJyZWNvIiwicHJwdCI6InBwIiwibWlkIjoicHJvZHVjdFJlY29tbWVuZGF0aW9uL3NpbWlsYXIifQ%3D%3D&pageUID=1791698911221",
+  "checked_at": "2026-10-11T06:09:02.560040+00:00",
+  "results": [
+    {
+      "size": "S",
+      "status": "AVAILABLE",
+      "reason": "No grey/cross-out indicator detected"
+    },
+    {
+      "size": "M",
+      "status": "AVAILABLE",
+      "reason": "No grey/cross-out indicator detected"
+    },
+    {
+      "size": "L",
+      "status": "OUT OF STOCK",
+      "reason": "Grey/cross-out indicator"
+    },
+    {
+      "size": "XL",
+      "status": "AVAILABLE",
+      "reason": "No grey/cross-out indicator detected"
+    },
+    {
+      "size": "XXL",
+      "status": "AVAILABLE",
+      "reason": "No grey/cross-out indicator detected"
+    },
+    {
+      "size": "3XL",
+      "status": "OUT OF STOCK",
+      "reason": "Grey/cross-out indicator"
+    }
+  ],
+  "available_count": 4,
+  "out_of_stock_count": 2,
+  "unknown_count": 0,
+  "note": "Results use the observed grey/cross-out rule."
+}
