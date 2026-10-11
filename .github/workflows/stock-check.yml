@@ -1,5 +1,4 @@
 
-
 name: User Stock Monitor
 
 on:
@@ -39,7 +38,8 @@ jobs:
           MONITOR_ID: ${{ inputs.monitor_id }}
         run: |
           python - <<'PY'
-          import os, re
+          import os
+          import re
           from urllib.parse import urlparse
 
           url = os.environ["PRODUCT_URL"]
@@ -51,11 +51,15 @@ jobs:
           ):
               raise SystemExit("Only HTTPS Flipkart URLs are allowed.")
 
-          if not re.fullmatch(r"[a-fA-F0-9-]{36}", os.environ["REQUEST_ID"]):
+          if not re.fullmatch(
+              r"[a-fA-F0-9-]{36}", os.environ["REQUEST_ID"]
+          ):
               raise SystemExit("Invalid REQUEST_ID.")
 
           monitor_id = os.environ.get("MONITOR_ID", "").strip()
-          if monitor_id and not re.fullmatch(r"[a-fA-F0-9-]{36}", monitor_id):
+          if monitor_id and not re.fullmatch(
+              r"[a-fA-F0-9-]{36}", monitor_id
+          ):
               raise SystemExit("Invalid MONITOR_ID.")
           PY
 
@@ -83,23 +87,28 @@ jobs:
           MONITOR_ID: ${{ inputs.monitor_id }}
         run: |
           python - <<'PY'
-          import json, os, urllib.request
+          import json
+          import os
+          import urllib.error
+          import urllib.request
 
-          secret = os.environ["CALLBACK_SECRET"]
+          secret = os.environ.get("CALLBACK_SECRET", "")
           if not secret:
-              raise SystemExit("CLOUDFLARE_CALLBACK_SECRET is missing.")
+              raise SystemExit(
+                  "CLOUDFLARE_CALLBACK_SECRET is missing or unavailable."
+              )
 
           with open("result.json", encoding="utf-8") as f:
               result = json.load(f)
 
           payload = json.dumps({
               "request_id": os.environ["REQUEST_ID"],
-              "monitor_id": os.environ.get("MONITOR_ID", ""),
+              "monitor_id": os.environ.get("MONITOR_ID", "").strip(),
               "result": result
-          }).encode()
+          }).encode("utf-8")
 
           req = urllib.request.Request(
-             "https://flipkart-stock-api.rraviranjan1181.workers.dev/result-callback",
+              "https://flipkart-stock-api.rraviranjan1181.workers.dev/result-callback",
               data=payload,
               headers={
                   "Content-Type": "application/json",
@@ -108,9 +117,14 @@ jobs:
               method="POST"
           )
 
-          with urllib.request.urlopen(req, timeout=30) as response:
-              print("Callback HTTP status:", response.status)
-              print(response.read().decode())
+          try:
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  print("Callback HTTP status:", response.status)
+                  print("Callback response:", response.read().decode())
+          except urllib.error.HTTPError as e:
+              print("Callback HTTP status:", e.code)
+              print("Callback response:", e.read().decode())
+              raise
           PY
 
       - name: Save result artifact
