@@ -47,8 +47,30 @@ button {
   color: white;
   font-size: 16px;
   font-weight: 700;
+  cursor: pointer;
 }
+button:disabled { opacity: .6; cursor: wait; }
 .note { color: #687386; font-size: 13px; line-height: 1.6; }
+#statusCard[hidden], #resultsCard[hidden] { display: none; }
+.progressTrack {
+  height: 8px;
+  background: #e5eaf2;
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 14px 0;
+}
+.progressBar {
+  height: 100%;
+  width: 8%;
+  background: #1769e0;
+  border-radius: 10px;
+  transition: width .4s;
+}
+table { width: 100%; text-align: left; border-collapse: collapse; }
+th, td { padding: 11px 8px; border-bottom: 1px solid #e5eaf2; }
+.statusAvailable { color: #14804a; font-weight: 700; }
+.statusOut { color: #c0392b; font-weight: 700; }
+.statusUnknown { color: #8a6500; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -62,113 +84,282 @@ button {
     <form id="stockForm">
       <label for="productUrl">Flipkart product URL</label>
       <input id="productUrl" type="url"
-        placeholder="Paste a Flipkart product link" required>
-      <button type="submit">Check Stock</button>
+        placeholder="Paste a Flipkart product link"
+        autocomplete="url" required>
+      <button id="checkButton" type="submit">Check Stock</button>
     </form>
     <p class="note">
-      Submit a request through GitHub. Once processing finishes,
-      the results will be available on this website.
+      Paste the product link and wait here. Your results will appear
+      automatically when the check finishes.
     </p>
   </section>
 
-  <section class="card">
-    <h3>View your results</h3>
-    <label for="issueNumber">Request number</label>
-    <input id="issueNumber" type="number" min="1"
-      placeholder="Enter your GitHub issue number">
-    <button id="viewResults" type="button">Show Results</button>
-    <p id="message" class="note"></p>
+  <section class="card" id="statusCard" hidden>
+    <h3 id="statusTitle">Starting stock check…</h3>
+    <p id="statusMessage" class="note" aria-live="polite">
+      Contacting the stock checker.
+    </p>
+    <div class="progressTrack">
+      <div class="progressBar" id="progressBar"></div>
+    </div>
+    <p class="note" id="elapsed">Preparing request…</p>
+  </section>
+
+  <section class="card" id="resultsCard" hidden>
+    <h3 id="productTitle">Stock results</h3>
+    <p class="note" id="checkedAt"></p>
     <div id="results"></div>
+    <p class="note" id="resultNote"></p>
+    <button id="checkAgain" type="button">Check Another Product</button>
   </section>
 </main>
 
 <script>
+const API_URL =
+  "https://flipkart-stock-api.rraviranjan1181.workers.dev/check";
+
 const OWNER = "rrrraviranjan1181-collab";
 const REPO = "flipkart-stock-alert";
 
-document.getElementById("stockForm").addEventListener("submit", function(e) {
-  e.preventDefault();
+const form = document.getElementById("stockForm");
+const input = document.getElementById("productUrl");
+const checkButton = document.getElementById("checkButton");
+const statusCard = document.getElementById("statusCard");
+const statusTitle = document.getElementById("statusTitle");
+const statusMessage = document.getElementById("statusMessage");
+const progressBar = document.getElementById("progressBar");
+const elapsed = document.getElementById("elapsed");
+const resultsCard = document.getElementById("resultsCard");
+const resultsBox = document.getElementById("results");
 
-  const raw = document.getElementById("productUrl").value.trim();
+let busy = false;
+
+function setProgress(percent, title, message) {
+  progressBar.style.width = percent + "%";
+  statusTitle.textContent = title;
+  statusMessage.textContent = message;
+}
+
+function validateProductUrl(raw) {
+  let url;
 
   try {
-    const u = new URL(raw);
-    if (!["http:", "https:"].includes(u.protocol) ||
-        !(u.hostname === "flipkart.com" ||
-          u.hostname.endsWith(".flipkart.com"))) {
-      alert("Please enter a valid Flipkart product link.");
-      return;
-    }
+    url = new URL(raw);
   } catch {
-    alert("Please enter a valid product link.");
+    throw new Error("Please enter a valid product URL.");
+  }
+
+  const host = url.hostname.toLowerCase();
+
+  if (
+    url.protocol !== "https:" ||
+    !(host === "flipkart.com" || host.endsWith(".flipkart.com"))
+  ) {
+    throw new Error("Please enter an HTTPS Flipkart product link.");
+  }
+
+  return url.href;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function loadResult(requestId, startedAt) {
+  const resultUrl =
+    `https://${OWNER}.github.io/${REPO}/results/${requestId}.json`;
+
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let attempts = 0;
+
+  while (Date.now() < deadline) {
+    attempts++;
+
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    elapsed.textContent = `Elapsed time: ${seconds}s`;
+
+    if (attempts < 4) {
+      setProgress(
+        25,
+        "Stock check queued",
+        "GitHub Actions is preparing your request."
+      );
+    } else if (attempts < 12) {
+      setProgress(
+        45,
+        "Checking product",
+        "The stock checker is processing the Flipkart page."
+      );
+    } else {
+      setProgress(
+        70,
+        "Waiting for results",
+        "The check may take a little longer while results are published."
+      );
+    }
+
+    try {
+      const response = await fetch(
+        resultUrl + "?t=" + Date.now(),
+        { cache: "no-store" }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+
+        if (!data.ok) {
+          throw new Error(data.error || "The stock check failed.");
+        }
+
+        showResults(data);
+        setProgress(100, "Stock check complete", "Results loaded.");
+        return;
+      }
+
+      if (response.status !== 404 && response.status !== 503) {
+        throw new Error("Could not retrieve the published result.");
+      }
+    } catch (error) {
+      if (
+        error.message &&
+        !error.message.includes("Failed to fetch") &&
+        !error.message.includes("NetworkError")
+      ) {
+        throw error;
+      }
+    }
+
+    await sleep(4000);
+  }
+
+  throw new Error(
+    "This check is taking longer than expected. Please try again later."
+  );
+}
+
+function showResults(data) {
+  document.getElementById("productTitle").textContent =
+    data.title || "Stock results";
+
+  document.getElementById("checkedAt").textContent =
+    data.checked_at ? "Checked: " + data.checked_at : "";
+
+  document.getElementById("resultNote").textContent = data.note || "";
+
+  resultsBox.replaceChildren();
+
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+
+  for (const label of ["Size", "Status"]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    headerRow.appendChild(th);
+  }
+
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+
+  for (const item of data.results || []) {
+    const tr = document.createElement("tr");
+    const size = document.createElement("td");
+    const status = document.createElement("td");
+
+    size.textContent = item.size || "—";
+    status.textContent = item.status || "UNKNOWN";
+
+    if (item.status === "AVAILABLE") {
+      status.className = "statusAvailable";
+    } else if (item.status === "OUT_OF_STOCK") {
+      status.className = "statusOut";
+    } else {
+      status.className = "statusUnknown";
+    }
+
+    tr.append(size, status);
+    tbody.appendChild(tr);
+  }
+
+  table.appendChild(tbody);
+  resultsBox.appendChild(table);
+
+  resultsCard.hidden = false;
+}
+
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  if (busy) return;
+
+  let productUrl;
+
+  try {
+    productUrl = validateProductUrl(input.value.trim());
+  } catch (error) {
+    alert(error.message);
     return;
   }
 
-  const target =
-    `https://github.com/${OWNER}/${REPO}/issues/new?title=` +
-    encodeURIComponent("Stock Check: Flipkart product") +
-    "&body=" + encodeURIComponent(
-      "Please check this Flipkart product:\n\n" + raw
+  busy = true;
+  checkButton.disabled = true;
+  checkButton.textContent = "Checking…";
+  statusCard.hidden = false;
+  resultsCard.hidden = true;
+  resultsBox.replaceChildren();
+
+  const startedAt = Date.now();
+  setProgress(
+    8,
+    "Starting stock check",
+    "Sending your product link securely to the checker."
+  );
+
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_url: productUrl })
+    });
+
+    let payload;
+
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error("The stock checker returned an invalid response.");
+    }
+
+    if (!response.ok || !payload.ok || !payload.request_id) {
+      throw new Error(payload.error || "Could not start the stock check.");
+    }
+
+    setProgress(
+      20,
+      "Request accepted",
+      "GitHub Actions has been asked to run your stock check."
     );
 
-  window.location.href = target;
+    await loadResult(payload.request_id, startedAt);
+  } catch (error) {
+    setProgress(
+      100,
+      "Unable to finish",
+      error.message || "Something went wrong."
+    );
+  } finally {
+    busy = false;
+    checkButton.disabled = false;
+    checkButton.textContent = "Check Stock";
+  }
 });
 
-document.getElementById("viewResults").addEventListener("click", async function() {
-  const issue = document.getElementById("issueNumber").value.trim();
-  const message = document.getElementById("message");
-  const results = document.getElementById("results");
-
-  results.innerHTML = "";
-
-  if (!/^[1-9][0-9]*$/.test(issue)) {
-    message.textContent = "Enter the issue number first.";
-    return;
-  }
-
-  message.textContent = "Loading results…";
-
-  try {
-    const url =
-      `https://${OWNER}.github.io/${REPO}/results/issue-${issue}.json?t=` +
-      Date.now();
-
-    const response = await fetch(url, {cache: "no-store"});
-
-    if (!response.ok) {
-      throw new Error("Results are not published yet. Please wait and retry.");
-    }
-
-    const data = await response.json();
-
-    if (!data.ok) {
-      throw new Error(data.error || "The stock check failed.");
-    }
-
-    const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;",
-      '"': "&quot;", "'": "&#39;"
-    })[c]);
-
-    let html = `<h3>${esc(data.title)}</h3>`;
-    html += `<p class="note">Checked: ${esc(data.checked_at)}</p>`;
-    html += "<table style='width:100%;text-align:left;border-collapse:collapse'>";
-    html += "<tr><th>Size</th><th>Status</th></tr>";
-
-    for (const item of data.results || []) {
-      const color = item.status === "AVAILABLE" ? "green" : "red";
-      html += `<tr><td style="padding:10px">${esc(item.size)}</td>`;
-      html += `<td style="padding:10px;color:${color}">`;
-      html += `${esc(item.status)}</td></tr>`;
-    }
-
-    html += "</table>";
-    html += `<p class="note">${esc(data.note || "")}</p>`;
-    results.innerHTML = html;
-    message.textContent = "Results loaded.";
-  } catch (error) {
-    message.textContent = error.message;
-  }
+document.getElementById("checkAgain").addEventListener("click", () => {
+  resultsCard.hidden = true;
+  statusCard.hidden = true;
+  input.focus();
 });
 </script>
 </body>
