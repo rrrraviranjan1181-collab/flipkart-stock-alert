@@ -4,10 +4,7 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 
-URL = (
-    "https://www.flipkart.com/adidas-solid-men-round-neck-black-t-shirt/"
-    "p/itma8b701e39e950?pid=TSHHNNHCKTYHWHGN&marketplace=FLIPKART"
-)
+URL = (PRODUCT_URL = "https://www.flipkart.com/puma-military-camouflage-men-crew-neck-black-t-shirt/p/itm5336dfb62fa01?pid=TSHHP6ADWYWKBJV2")
 
 SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
 
