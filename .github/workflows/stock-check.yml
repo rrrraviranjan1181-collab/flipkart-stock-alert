@@ -1,0 +1,98 @@
+
+name: Flipkart Website Stock Check
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check-stock:
+    if: startsWith(github.event.issue.title, 'Stock Check:')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Extract product URL
+        id: product
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from urllib.parse import urlparse
+
+          body = os.environ.get("ISSUE_BODY", "")
+          urls = re.findall(r"https?://[^\s<>]+", body)
+          valid = []
+
+          for url in urls:
+              url = url.rstrip(".,);]")
+              parsed = urlparse(url)
+              host = (parsed.hostname or "").lower()
+
+              if (
+                  parsed.scheme in ("http", "https")
+                  and (
+                      host == "flipkart.com"
+                      or host.endswith(".flipkart.com")
+                  )
+              ):
+                  valid.append(url)
+
+          if len(valid) != 1:
+              raise SystemExit(
+                  "Issue must contain exactly one Flipkart product URL."
+              )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("url=" + valid[0] + "\n")
+          PY
+
+      - name: Run stock checker
+        env:
+          PRODUCT_URL: ${{ steps.product.outputs.url }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          mkdir -p docs/results
+          python stock_check.py \
+            "$PRODUCT_URL" \
+            "docs/results/issue-${ISSUE_NUMBER}.json"
+
+      - name: Publish website result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/results/issue-${{ github.event.issue.number }}.json"
+          git commit -m "Publish stock results for issue #${{ github.event.issue.number }}" || exit 1
+          git push
+
+      - name: Comment with website link
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const number = context.issue.number;
+            const url =
+              `https://${context.repo.owner}.github.io/${context.repo.repo}/?issue=${number}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body: `Check the website for your stock results: ${url}`
+            });
